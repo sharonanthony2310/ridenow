@@ -44,22 +44,18 @@ const fareRates: Record<CabType, { base: number; perKm: number }> = {
 };
 
 // CORS: allow the deployed frontend and local development frontend.
+
 app.use(
   cors({
-    origin: (origin, callback) => {
-      const normalizedOrigin = origin?.replace(/\/+$/, "");
-
-      if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin)) {
-        callback(null, true);
-      } else {
-        console.error("CORS blocked origin:", normalizedOrigin);
-        callback(null, false);
-      }
-    },
+    origin: [
+      "https://ridenow-2s41.onrender.com",
+      "http://localhost:3000",
+    ],
     allowedHeaders: ["Content-Type", "Authorization"],
     methods: ["GET", "POST", "OPTIONS"],
   })
 );
+
 
 app.use(express.json({ limit: "20kb" }));
 app.use(clerkMiddleware());
