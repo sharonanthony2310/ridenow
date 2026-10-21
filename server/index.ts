@@ -9,7 +9,11 @@ import { registerReviewRoutes } from "./reviews";
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+
+const allowedOrigins = [
+  "https://ridenow-2s41.onrender.com",
+  "http://localhost:3000",
+];
 
 type CabType = "Mini" | "Sedan" | "XL";
 
@@ -36,27 +40,22 @@ const fareRates: Record<CabType, { base: number; perKm: number }> = {
   XL: { base: 80, perKm: 24 },
 };
 
+// CORS: allow only the deployed frontend and local frontend.
 app.use(
   cors({
-    origin: FRONTEND_URL,
-    allowedHeaders: ["Content-Type", "Authorization"],
-    methods: ["GET", "POST", "DELETE", "OPTIONS"],
-  })
-);
-
-// Preserve the raw body so Stripe can verify webhook signatures.
-app.use(
-  express.json({
-    limit: "20kb",
-    verify: (req, _res, buffer) => {
-      // IncomingMessage exposes `url`; `originalUrl` is Express-specific.
-      if (req.url === "/api/stripe/webhook") {
-        (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS blocked origin: ${origin}`));
       }
     },
+    allowedHeaders: ["Content-Type", "Authorization"],
+    methods: ["GET", "POST", "OPTIONS"],
   })
 );
 
+app.use(express.json({ limit: "20kb" }));
 app.use(clerkMiddleware());
 
 function authenticatedUserId(req: Request): string | null {
@@ -147,15 +146,12 @@ function requiredProfileText(
   return { value: trimmed };
 }
 
+// Health check.
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", service: "RideNow API" });
 });
 
-// Register payment and review endpoints.
-registerPaymentRoutes(app);
-registerReviewRoutes(app);
-
-// Rider: view only their own bookings, with driver details and live location.
+// Rider: view only their own bookings.
 app.get("/api/rides/mine", async (req, res) => {
   const userId = authenticatedUserId(req);
 
@@ -179,7 +175,6 @@ app.get("/api/rides/mine", async (req, res) => {
   }
 
   const rides = data ?? [];
-
   const driverIds = [
     ...new Set(
       rides
@@ -230,44 +225,6 @@ app.get("/api/rides/mine", async (req, res) => {
     );
   }
 
-  const activeRideIds = rides
-    .filter(
-      (ride) =>
-        ride.status === "accepted" || ride.status === "in_progress"
-    )
-    .map((ride) => ride.id);
-
-  let locationsByRideId: Record<
-    string,
-    { latitude: number; longitude: number; updated_at: string }
-  > = {};
-
-  if (activeRideIds.length > 0 && driverIds.length > 0) {
-    const { data: locations, error: locationError } = await supabase
-      .from("driver_locations")
-      .select("ride_id, latitude, longitude, updated_at")
-      .in("ride_id", activeRideIds)
-      .in("driver_id", driverIds);
-
-    if (locationError) {
-      console.error("Driver location lookup failed:", locationError.message);
-      return res.status(500).json({
-        error: "Could not load driver locations.",
-      });
-    }
-
-    locationsByRideId = Object.fromEntries(
-      (locations ?? []).map((location) => [
-        location.ride_id,
-        {
-          latitude: location.latitude,
-          longitude: location.longitude,
-          updated_at: location.updated_at,
-        },
-      ])
-    );
-  }
-
   return res.json({
     rides: rides.map((ride) => ({
       ...ride,
@@ -275,7 +232,6 @@ app.get("/api/rides/mine", async (req, res) => {
         typeof ride.driver_id === "string"
           ? profilesById[ride.driver_id] ?? null
           : null,
-      driver_location: locationsByRideId[ride.id] ?? null,
     })),
   });
 });
@@ -290,7 +246,7 @@ app.post("/api/rides", async (req, res) => {
     });
   }
 
-  const body = (req.body ?? {}) as RideRequestBody;
+  const body = req.body as RideRequestBody;
   const { pickup, dropoff, cabType, distanceKm, passengerCount } = body;
 
   const validLocation = (location: RideRequestBody["pickup"]) =>
@@ -358,7 +314,7 @@ app.post("/api/rides", async (req, res) => {
   return res.status(201).json({ ride: data });
 });
 
-// Rider: cancel only their own unassigned requested ride.
+// Rider: cancel only their own ride while it is still requested.
 app.post("/api/rides/:id/cancel", async (req, res) => {
   const userId = authenticatedUserId(req);
 
@@ -424,7 +380,7 @@ app.get("/api/driver/profile", async (req, res) => {
   return res.json({ profile: data ?? null });
 });
 
-// Driver: create or update their own profile.
+// Driver: create or update only their own profile.
 app.post("/api/driver/profile", async (req, res) => {
   const driverId = await requireDriver(req, res);
   if (!driverId) return;
@@ -435,7 +391,11 @@ app.post("/api/driver/profile", async (req, res) => {
   const vehicleMake = optionalProfileText(body.vehicleMake, "Vehicle make", 50);
   const vehicleModel = optionalProfileText(body.vehicleModel, "Vehicle model", 50);
   const vehicleColor = optionalProfileText(body.vehicleColor, "Vehicle colour", 30);
-  const vehiclePlate = optionalProfileText(body.vehiclePlate, "Vehicle registration", 20);
+  const vehiclePlate = optionalProfileText(
+    body.vehiclePlate,
+    "Vehicle registration",
+    20
+  );
 
   const validationError =
     displayName.error ||
@@ -614,101 +574,9 @@ app.post("/api/driver/rides/:id/:action", async (req, res) => {
   return res.json({ ride: data });
 });
 
-// Driver: share current GPS location for an assigned ride in progress.
-app.post("/api/driver/location", async (req, res) => {
-  const driverId = await requireDriver(req, res);
-  if (!driverId) return;
-
-  const { rideId, latitude, longitude } = req.body ?? {};
-
-  if (
-    !validRideId(rideId) ||
-    typeof latitude !== "number" ||
-    !Number.isFinite(latitude) ||
-    latitude < -90 ||
-    latitude > 90 ||
-    typeof longitude !== "number" ||
-    !Number.isFinite(longitude) ||
-    longitude < -180 ||
-    longitude > 180
-  ) {
-    return res.status(400).json({
-      error: "A valid ride ID and GPS coordinates are required.",
-    });
-  }
-
-  const { data: ride, error: rideError } = await supabase
-    .from("rides")
-    .select("id")
-    .eq("id", rideId)
-    .eq("driver_id", driverId)
-    .eq("status", "in_progress")
-    .maybeSingle();
-
-  if (rideError) {
-    console.error("Driver location ride lookup failed:", rideError.message);
-    return res.status(500).json({
-      error: "Could not verify this ride.",
-    });
-  }
-
-  if (!ride) {
-    return res.status(403).json({
-      error: "Location can be shared only for your own ride in progress.",
-    });
-  }
-
-  const { data, error } = await supabase
-    .from("driver_locations")
-    .upsert(
-      {
-        driver_id: driverId,
-        ride_id: rideId,
-        latitude,
-        longitude,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "driver_id" }
-    )
-    .select("ride_id, latitude, longitude, updated_at")
-    .single();
-
-  if (error) {
-    console.error("Driver GPS update failed:", error.message);
-    return res.status(500).json({
-      error: "Could not update driver location.",
-    });
-  }
-
-  return res.json({ location: data });
-});
-
-// Driver: stop sharing GPS location for a ride.
-app.delete("/api/driver/location/:rideId", async (req, res) => {
-  const driverId = await requireDriver(req, res);
-  if (!driverId) return;
-
-  const rideId = req.params.rideId;
-
-  if (!validRideId(rideId)) {
-    return res.status(400).json({ error: "Invalid ride ID." });
-  }
-
-  const { error } = await supabase
-    .from("driver_locations")
-    .delete()
-    .eq("driver_id", driverId)
-    .eq("ride_id", rideId);
-
-  if (error) {
-    console.error("Driver GPS cleanup failed:", error.message);
-    return res.status(500).json({
-      error: "Could not stop location sharing.",
-    });
-  }
-
-  return res.json({ success: true });
-});
+// Register payment and review endpoints.
+registerPaymentRoutes(app);
+registerReviewRoutes(app);
 
 app.listen(PORT, () => {
   console.log(`RideNow API listening on port ${PORT}`);
