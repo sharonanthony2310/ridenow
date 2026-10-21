@@ -1,9 +1,12 @@
+
 {
   "name": "cab-booking-app",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "server": "tsx watch server/index.ts",
+    "server:build": "tsc --noEmit",
+    "server:start": "tsx server/index.ts",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
