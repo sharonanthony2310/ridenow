@@ -11,9 +11,12 @@ const app = express();
 const PORT = Number(process.env.PORT || 4000);
 
 const allowedOrigins = [
+  process.env.FRONTEND_URL,
   "https://ridenow-2s41.onrender.com",
   "http://localhost:3000",
-];
+]
+  .filter((origin): origin is string => Boolean(origin))
+  .map((origin) => origin.replace(/\/+$/, ""));
 
 type CabType = "Mini" | "Sedan" | "XL";
 
@@ -40,14 +43,17 @@ const fareRates: Record<CabType, { base: number; perKm: number }> = {
   XL: { base: 80, perKm: 24 },
 };
 
-// CORS: allow only the deployed frontend and local frontend.
+// CORS: allow the deployed frontend and local development frontend.
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      const normalizedOrigin = origin?.replace(/\/+$/, "");
+
+      if (!normalizedOrigin || allowedOrigins.includes(normalizedOrigin)) {
         callback(null, true);
       } else {
-        callback(new Error(`CORS blocked origin: ${origin}`));
+        console.error("CORS blocked origin:", normalizedOrigin);
+        callback(null, false);
       }
     },
     allowedHeaders: ["Content-Type", "Authorization"],
