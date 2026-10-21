@@ -49,7 +49,8 @@ app.use(
   express.json({
     limit: "20kb",
     verify: (req, _res, buffer) => {
-      if (req.originalUrl === "/api/stripe/webhook") {
+      // IncomingMessage exposes `url`; `originalUrl` is Express-specific.
+      if (req.url === "/api/stripe/webhook") {
         (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
       }
     },
@@ -710,5 +711,5 @@ app.delete("/api/driver/location/:rideId", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`RideNow API running at http://localhost:${PORT}`);
+  console.log(`RideNow API listening on port ${PORT}`);
 });
