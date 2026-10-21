@@ -5,8 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth, UserButton } from "@clerk/nextjs";
 
-const API_URL = "http://localhost:4000";
-
+const API_URL = "https://ridenow-api-dz3z.onrender.com";
 type Ride = {
   id: string;
   pickup_name: string;

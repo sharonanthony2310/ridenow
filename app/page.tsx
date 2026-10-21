@@ -33,8 +33,7 @@ type SavedRide = {
   created_at: string;
 };
 
-const API_URL = "http://localhost:4000";
-
+const API_URL = "https://ridenow-api-dz3z.onrender.com";
 async function readApiResponse(response: Response): Promise<any> {
   const text = await response.text();
 
